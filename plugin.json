@@ -1,0 +1,8 @@
+{
+  "name": "Ge Price Library",
+  "version": "0.1.0",
+  "requiredDependencies": [],
+  "optionalDependencies": [],
+  "optionalPermissions": [ "httpAccess" ],
+  "urls": { "rswiki" : "https://runescape.wiki", "prices" : "https://prices.runescape.wiki" }
+}

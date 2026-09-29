@@ -13,6 +13,7 @@
 ---@field getPrice fun(itemId: integer): Item
 ---@field isReady fun(): boolean
 ---@field isFetching fun(): boolean
+
 local PriceService = {}
 
 local PDB_BATCH_SIZE = 300 -- number of items per database entry
@@ -21,12 +22,16 @@ local PDB_STORAGE_KEY = "GEPL_"
 local PDB_INDEX_KEY = "GEPL_INDEX_"
 local PDB_LAST_SAVE_KEY = "GEPL_LAST_SAVE_TIME"
 
+
+--- Creates the PriceService instance, keeping most of the functions private by embedding them within the constructor.
+--- @param endpoint string The API endpoint for fetching GE prices.
+--- @return table PriceService The PriceService instance.
 function PriceService.new(endpoint)
     local PriceResult = {}
     local IsReady = false
     local IsFetching = false
 
-    --- @description Inserts the given price data into the persistent database and returns the structured data and indices.
+    --- Inserts the given price data into the persistent database and returns the structured data and indices.
     --- @param price_data string The raw price data in JSON format.
     --- @return table<integer, Item> data The structured price data.
     --- @return table<integer, {first: integer, last: integer}> indices The indices for tracking batches.
@@ -76,7 +81,7 @@ function PriceService.new(endpoint)
         return data, indices, update_time
     end
 
-    --- @description Loads the GE prices from the PersistentDB into memory.
+    --- Loads the GE prices from the PersistentDB into memory.
     --- @return table<integer, Item> data loaded price data.
     --- @return table<integer, {first: integer, last: integer}> indices loaded indices for tracking batches.
     --- @return integer lastUpdateTime the last time the prices were updated in the persistent database.
@@ -98,7 +103,7 @@ function PriceService.new(endpoint)
         return data, indices, lastUpdateTime
     end
 
-    --- @description Handles the HTTP response for the GE prices request. Updates PriceResult and readiness state based on the response.
+    --- Handles the HTTP response for the GE prices request. Updates PriceResult and readiness state based on the response.
     --- @param req HTTPRequest The HTTP request object containing the response data.
     local requestHandler = function(req)
         IsFetching = false
@@ -112,10 +117,9 @@ function PriceService.new(endpoint)
         end
     end
 
-    ---
+    --- Fetches the latest GE prices from the server if the plugin has the required HTTP access permission. Updates the fetching state and handles the HTTP request.
     local fetchPrices = function()
         if Plugin.HasPermission(PluginPermissions.httpAccess) then
-            log("Fetching latest prices...")
             IsFetching = true
             local req = HTTPRequest.new(Plugin.urls.prices, endpoint)
             req:AddHeader("User-Agent", "ge-prices-library/1.0")
@@ -125,21 +129,20 @@ function PriceService.new(endpoint)
         end
     end
 
-    --- @description Gets the GE prices. First checking the cache in the PersistentDB and then fetching from prices.runescape.wiki. The data is loaded into PriceResult and the readiness state is updated.
+    --- Gets the GE prices. First checking the cache in the PersistentDB and then fetching from prices.runescape.wiki. The data is loaded into PriceResult and the readiness state is updated.
     local getPrices = function()
         local curTimer = var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
         local lastSave = PriceResult.lastUpdateTime
         if lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD then
             -- Extract data from PersistentDB
             PriceResult.data, PriceResult.indices, PriceResult.lastUpdateTime = loadPrices()
-            log("Loaded prices from PersistentDB, total batches:", #PriceResult.indices)
             IsReady = true
         else
             fetchPrices()
         end
     end
 
-    ---@description Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
+    --- Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
     ---@return boolean cacheExpired Returns true if the cache expired, the prices will then be fetched.
     local updateDatabase = function()
         local curTimer = var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
@@ -156,11 +159,11 @@ function PriceService.new(endpoint)
     getPrices()
 
     return {
-        ---@description Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
-        ---@return boolean cacheExpired Returns true if the cache expired, the prices will then be fetched.
+        --- Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
+        --- @return boolean cacheExpired Returns true if the cache expired, the prices will then be fetched.
         updateDatabase = updateDatabase,
 
-        --- @description Gets the price for a specific item ID from the loaded GE prices.
+        --- Gets the price for a specific item ID from the loaded GE prices.
         --- @param itemId number The ID of the item to get the price for.
         --- @return Item item The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
@@ -173,13 +176,13 @@ function PriceService.new(endpoint)
             end
         end,
 
-        --- @description Checks if the GE price service is ready.
+        --- Checks if the GE price service is ready.
         --- @return boolean IsReady true if the service is ready, false otherwise.
         isReady = function()
             return IsReady
         end,
 
-        --- @description Checks if the GE price service is fetching. The service can still be ready while fetching with previous data.
+        --- Checks if the GE price service is fetching. The service can still be ready while fetching with previous data.
         --- @return boolean IsFetching true if the service is fetching, false otherwise.
         isFetching = function()
             return IsFetching

@@ -1,5 +1,3 @@
-log("Starting GE Price Library")
-
 -- Temporary assigning of permissions
 ExecuteConsoleCommand("ppr gepl")
 ExecuteConsoleCommand("ppe gepl http")

@@ -44,16 +44,19 @@
 ---@field isReady fun(): boolean
 ---@field isFetching fun(): boolean
 
+local UI = require("ui")
+local Settings = require("settings")
+
 local Json = require("util/json_helper")
 local Private = require("util/protected_helper")
 
 local VERSION = "0.2.0"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
-    ["latest"] = 100,
-    ["5m"] = 500,
-    ["1h"] = 500,
-    ["timeseries"] = 500,
+    ["latest"] = 6000,
+    ["fiveMinute"] = 30000,
+    ["oneHour"] = 30000,
+    ["timeseries"] = 30000,
 }
 local PDB_STORAGE_KEY = "GEPL_"
 local PDB_INDEX_KEY = "GEPL_INDEX_"
@@ -99,11 +102,11 @@ function PriceService.new()
 
     -- Check the version of the persistent database and clear it if it doesn't match the current version.
     -- This keeps the persistent database in sync with the current version of the PriceService.
-    local lastVersion = "0.0.0"
+    local lastVersion = "0.2.4"
     if PersistentDB:CheckExists(PDB_VERSION_KEY) then
         lastVersion = PersistentDB:GetString(PDB_VERSION_KEY) or "0.0.0"
     end
-    if true or lastVersion ~= VERSION then
+    if false or lastVersion ~= VERSION then
         PersistentDB:Clear()
         PersistentDB:SetString(PDB_VERSION_KEY, VERSION)
     end
@@ -114,6 +117,7 @@ function PriceService.new()
     --- @return table<integer, {first: integer, last: integer}> indices The indices for tracking batches.
     --- @return integer lastUpdateTime the last time the prices were fetched from prices.runescape.wiki.
     local insertPrices = function(endpointName, data)
+        local batches = {}
         local indices = {}
         
         -- Save batches of prices to the persistent database, last and first index are saved to find the range of stored batches
@@ -130,9 +134,8 @@ function PriceService.new()
             last = id
             count = count + 1
             if count >= PDB_BATCH_SIZE then
-                -- Save the batch to the database
-                PersistentDB:SetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num, batch)
-                PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. batch_num, {first = first, last = last})
+                -- Save the batch for caching
+                batches[batch_num] = batch
                 indices[batch_num] = {first = first, last = last}
                 batch_num = batch_num + 1
                 batch = {}
@@ -141,13 +144,25 @@ function PriceService.new()
         end
         if count > 0 then
             -- Save the remaining batch to the database
-            PersistentDB:SetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num, batch)
-            PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. batch_num, {first = first, last = last})
+            batches[batch_num] = batch
             indices[batch_num] = {first = first, last = last}
         end
-        -- Update the last save time in the persistent database
-        local update_time = sessionTimer -- var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
-        PersistentDB:SetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName), update_time)
+
+        -- Save batches of prices to the persistent database, last and first index are saved to find the range of stored batches
+        -- This is saved via the ServerLogic event cycle to the persistent database to reduce stutter and performance impact.
+        local batch_num = 0
+        local update_time = sessionTimer
+        Event.ServerLogic.Subscribe("SAVE_" .. string.upper(endpointName), function()
+            PersistentDB:SetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num, batches[batch_num])
+            PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. batch_num, indices[batch_num])
+            batch_num = batch_num + 1
+            if batch_num >= #batches then
+                Event.ServerLogic.Unsubscribe("SAVE_" .. string.upper(endpointName))
+                -- Update the last save time in the persistent database
+                PersistentDB:SetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName), update_time)
+            end
+        end)
+
         return indices, update_time
     end
 
@@ -158,10 +173,14 @@ function PriceService.new()
     local loadPrices = function(endpointName)
         local indices = {}
         local batch_num = 0
+        local lastUpdateTime = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
+        
+        -- Event.ServerLogic.Subscribe("LOAD_" .. string.upper(endpointName), function() -- For slow loading, seems unnecessary but will leave as reference if needed.
         while true do
             local batch = PersistentDB:GetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num)
             local index = PersistentDB:GetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. "_" .. batch_num)
             if not batch then break end
+            -- if not batch then Event.ServerLogic.Unsubscribe("LOAD_" .. string.upper(endpointName)) return end
             for _, entry in ipairs(batch) do
                 local id = entry.id
                 if not PriceResult.data[tostring(id)] then
@@ -172,7 +191,7 @@ function PriceService.new()
             indices[batch_num] = index
             batch_num = batch_num + 1
         end
-        local lastUpdateTime = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
+
         return indices, lastUpdateTime
     end
 
@@ -232,15 +251,13 @@ function PriceService.new()
                 local callbackWrapper = function(req)
                     IsFetching[endpointName] = false
                     if req.successful then
-                        -- log(req.url, "request successful")
-                        -- log("ID:", args["id"], "Time:", sessionTimer) -- var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value)
                         local data = Json.safe_decode(req.data)["data"]
                         if not PriceResult.data[endpointName] then PriceResult.data[endpointName] = {} end
                         if not PriceResult.data[endpointName][args["id"]] then PriceResult.data[endpointName][args["id"]] = {} end
 
                         PriceResult.data[endpointName][args["id"]][args["lookback"]] = {
                             data = data,
-                            savedTime = sessionTimer -- var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
+                            savedTime = sessionTimer
                         }
                         successCb(data)
                         IsReady[endpointName] = true
@@ -263,10 +280,10 @@ function PriceService.new()
 
     --- Gets the GE prices. First checking the cache in the PersistentDB and then fetching from prices.runescape.wiki. The data is loaded into PriceResult and the readiness state is updated.
     local getPrices = function()
-        for key, endpointName in pairs(endpoints) do
-            local curTimer = sessionTimer -- var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
+        for _, endpointName in pairs(endpoints) do
+            local curTimer = sessionTimer
             local lastSave = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
-            if lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then
+            if lastSave and CACHE_PERIOD[endpointName] and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then
                 -- Extract data from PersistentDB
                 PriceResult.indices[endpointName], PriceResult.lastUpdateTime[endpointName] = loadPrices(endpointName)
                 IsReady[endpointName] = true
@@ -281,18 +298,37 @@ function PriceService.new()
     local updateDatabase = function(endpointName)
         if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
         
-        local curTimer = sessionTimer -- var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
+        local curTimer = sessionTimer
         local lastSave = PriceResult.lastUpdateTime[endpointName]
-        if lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then return false end
+        if not Settings.config.enablePriceFetching and lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then return false end
         -- Set lastUpdateTime now to prevent further iterations from initiating multiple fetches while the fetch is running.
         -- Check IsFetching as a safety percaution.
-        PriceResult.lastUpdateTime[endpointName] = sessionTimer -- var.VarPlayer.CLOCK_TIME_DATE_MINUTES.value
+        PriceResult.lastUpdateTime[endpointName] = sessionTimer
         if not IsFetching[endpointName] then fetchPrices(endpointName) end
         return true
     end
 
-    -- Initialize the GE prices by either loading from the cache or fetching from the server.
-    getPrices()
+    --- Loads the plugin settings from the persistent database.
+    Settings.LoadSettings()
+
+    --- Binds the plugin settings to the UI module.
+    UI.BindSettings(Settings)
+
+    --- Subscribes to the Logic event to initialize the session timer.
+    --- This is used to track the client game tick which restarts when
+    --- the client is restarted. Then starts the session timer for
+    --- tracking the cache period and gets the prices.
+    Event.Logic.Subscribe("Tick", function(event)
+        sessionTimer = event.logicTick
+        Event.Logic.Unsubscribe("Tick")
+        --- Subscribes to ServerLogic to track the session time for caching purposes.
+        Event.ServerLogic.Subscribe("TickClock", function()        
+            sessionTimer = sessionTimer + 30
+        end)
+
+        -- Initialize the GE prices by either loading from the cache or fetching from the server.
+        getPrices()
+    end)
 
     return {
         --- Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
@@ -359,8 +395,10 @@ function PriceService.new()
         --- @param successCb function The function to call once the timeseries data is fetched. Should take the fetched timeseries data as an argument.
         --- @param errorCb function The function to call if an error occurs during the timeseries data fetch. Should take the error message as an argument.
         --- @return boolean success True if the timeseries data fetch was initiated successfully, false otherwise.
+        --- @throw Error if price fetching is disabled by the player or if the Grand Exchange window is not loaded.
         getCurrentTimeseries = function(lookback, successCb, errorCb)
             local loadedSprite = ui.Interfaces:GetComponent(id.Interface.STOCKMARKET, 154)
+            if not Settings.config.enablePriceFetching then error("Price fetching is disabled by the player.") end
             if not loadedSprite.visibleGlobal or loadedSprite.associatedObjectID == -1 then error("Grand Exchange Buy/Sell window is not loaded.") end
             if not IsFetching["timeseries"] then
                 if ({ "6h", "24h", "7d", "30d", "6m", "1y" })[lookback] then
@@ -391,13 +429,20 @@ function PriceService.new()
             if not endpointName then return IsFetching["latest"] end
             if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsFetching[endpointName]
-        end
+        end,
+
+        --- Checks if price fetching is turned on in the settings.
+        --- @return boolean isOn True if price fetching is enabled, false otherwise.
+        isFetchingOn = function()
+            return Settings.config.enablePriceFetching
+        end,
     }
 end
 
---- Subscribes to ServerLogic to track the session time for caching purposes.
-Event.ServerLogic.Subscribe("TickClock", function()
-    sessionTimer = sessionTimer + 1
-end)
+--- Saves the plugin settings and stops the SettingsContentLayer.
+function PriceService.Shutdown()
+    Settings.SaveSettings()
+    UI.Shutdown()
+end
 
 return PriceService

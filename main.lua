@@ -4,7 +4,8 @@ local GEPrice = PriceService.new()
 
 -- Cleans up the plugin when it is shut down.
 function PluginShutdown()
-    -- Nothing right now.
+    -- Run shutdown for the PriceService.
+    PriceService.Shutdown()
 end
 
 return GEPrice

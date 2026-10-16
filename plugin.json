@@ -5,6 +5,6 @@
   "requiredDependencies": {},
   "optionalDependencies": {},
   "hasSettingsIcon" : true,
-  "optionalPermissions": [ "httpAccess" ],
+  "requiredPermissions": [ "httpAccess" ],
   "urls": { "prices" : "https://prices.runescape.wiki" }
 }

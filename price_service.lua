@@ -50,7 +50,7 @@ local Settings = require("settings")
 local Json = require("util/json_helper")
 local Private = require("util/protected_helper")
 
-local VERSION = "0.2.4"
+local VERSION = "0.2.5"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
     ["latest"] = 6000,

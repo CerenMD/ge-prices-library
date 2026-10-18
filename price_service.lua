@@ -50,7 +50,7 @@ local Settings = require("settings")
 local Json = require("util/json_helper")
 local Private = require("util/protected_helper")
 
-local VERSION = "0.2.0"
+local VERSION = "0.2.4"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
     ["latest"] = 6000,
@@ -102,7 +102,7 @@ function PriceService.new()
 
     -- Check the version of the persistent database and clear it if it doesn't match the current version.
     -- This keeps the persistent database in sync with the current version of the PriceService.
-    local lastVersion = "0.2.4"
+    local lastVersion = "0.0.0"
     if PersistentDB:CheckExists(PDB_VERSION_KEY) then
         lastVersion = PersistentDB:GetString(PDB_VERSION_KEY) or "0.0.0"
     end

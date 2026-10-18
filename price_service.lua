@@ -124,6 +124,10 @@ function PriceService.new()
         local batch = {}
         local count, first, last = 0, 0, 0
         local batch_num = 0
+         if type(data) ~= "table" then error("Invalid price data: expected a table") end
+         for _, cachedItem in pairs(PriceResult.data) do
+             cachedItem[endpointName] = nil
+         end
         for id, item in pairs(data) do
             batch[#batch + 1] = {id = id, item = item}
             if not PriceResult.data[tostring(id)] then
@@ -147,6 +151,9 @@ function PriceService.new()
             batches[batch_num] = batch
             indices[batch_num] = {first = first, last = last}
         end
+        
+        -- Saves the number of batches to the persistent database for tracking purposes.
+        PersistentDB:SetInt(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_BATCH_COUNT", #batches)
 
         -- Save batches of prices to the persistent database, last and first index are saved to find the range of stored batches
         -- This is saved via the ServerLogic event cycle to the persistent database to reduce stutter and performance impact.
@@ -156,7 +163,7 @@ function PriceService.new()
             PersistentDB:SetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num, batches[batch_num])
             PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. batch_num, indices[batch_num])
             batch_num = batch_num + 1
-            if batch_num >= #batches then
+            if batches[batch_num] == nil then
                 Event.ServerLogic.Unsubscribe("SAVE_" .. string.upper(endpointName))
                 -- Update the last save time in the persistent database
                 PersistentDB:SetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName), update_time)
@@ -172,15 +179,13 @@ function PriceService.new()
     --- @return integer lastUpdateTime the last time the prices were updated in the persistent database.
     local loadPrices = function(endpointName)
         local indices = {}
-        local batch_num = 0
+        local batch_count = PersistentDB:GetInt(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_BATCH_COUNT") or 0
         local lastUpdateTime = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
-        
-        -- Event.ServerLogic.Subscribe("LOAD_" .. string.upper(endpointName), function() -- For slow loading, seems unnecessary but will leave as reference if needed.
-        while true do
+
+        for batch_num = 0, batch_count - 1 do
             local batch = PersistentDB:GetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num)
             local index = PersistentDB:GetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. "_" .. batch_num)
             if not batch then break end
-            -- if not batch then Event.ServerLogic.Unsubscribe("LOAD_" .. string.upper(endpointName)) return end
             for _, entry in ipairs(batch) do
                 local id = entry.id
                 if not PriceResult.data[tostring(id)] then
@@ -189,7 +194,6 @@ function PriceService.new()
                 PriceResult.data[tostring(id)][endpointName] = entry.item
             end
             indices[batch_num] = index
-            batch_num = batch_num + 1
         end
 
         return indices, lastUpdateTime
@@ -204,7 +208,12 @@ function PriceService.new()
 
         IsFetching[tableName] = false
         if req.successful then
-            local data = Json.safe_decode(req.data)["data"]
+            local decoded, err = Json.decode(req.data)
+            if err or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
+                log(req.url, "invalid price response", err or "missing data table")
+                return
+            end
+            local data = decoded.data
             PriceResult.indices[tableName], PriceResult.lastUpdateTime[tableName] = insertPrices(tableName, data)
             IsReady[tableName] = true
         elseif req.timedOut then
@@ -251,7 +260,14 @@ function PriceService.new()
                 local callbackWrapper = function(req)
                     IsFetching[endpointName] = false
                     if req.successful then
-                        local data = Json.safe_decode(req.data)["data"]
+                        local decoded, err = Json.decode(req.data)
+                        if err or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
+                            local message = "Invalid timeseries response: " .. (err or "missing data table")
+                            log(req.url, message)
+                            if errorCb then errorCb(message) end
+                            return
+                        end
+                        local data = decoded.data
                         if not PriceResult.data[endpointName] then PriceResult.data[endpointName] = {} end
                         if not PriceResult.data[endpointName][args["id"]] then PriceResult.data[endpointName][args["id"]] = {} end
 
@@ -283,11 +299,11 @@ function PriceService.new()
         for _, endpointName in pairs(endpoints) do
             local curTimer = sessionTimer
             local lastSave = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
-            if lastSave and CACHE_PERIOD[endpointName] and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then
+            if lastSave and CACHE_PERIOD[endpointName] and (not Settings.config.enablePriceFetching or math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName]) then
                 -- Extract data from PersistentDB
                 PriceResult.indices[endpointName], PriceResult.lastUpdateTime[endpointName] = loadPrices(endpointName)
                 IsReady[endpointName] = true
-            elseif endpointName ~= "timeseries" then
+            elseif endpointName ~= "timeseries" and Settings.config.enablePriceFetching then
                 fetchPrices(endpointName)
             end
         end
@@ -296,11 +312,13 @@ function PriceService.new()
     --- Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
     ---@return boolean cacheExpired Returns true if the cache expired, the prices will then be fetched.
     local updateDatabase = function(endpointName)
+        -- Returns instantly if the endpoint name is invalid or price fetching is disabled.
         if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
-        
+        if not Settings.config.enablePriceFetching then return false end
+
         local curTimer = sessionTimer
         local lastSave = PriceResult.lastUpdateTime[endpointName]
-        if not Settings.config.enablePriceFetching and lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then return false end
+        if lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then return false end
         -- Set lastUpdateTime now to prevent further iterations from initiating multiple fetches while the fetch is running.
         -- Check IsFetching as a safety percaution.
         PriceResult.lastUpdateTime[endpointName] = sessionTimer
@@ -401,7 +419,7 @@ function PriceService.new()
             if not Settings.config.enablePriceFetching then error("Price fetching is disabled by the player.") end
             if not loadedSprite.visibleGlobal or loadedSprite.associatedObjectID == -1 then error("Grand Exchange Buy/Sell window is not loaded.") end
             if not IsFetching["timeseries"] then
-                if ({ "6h", "24h", "7d", "30d", "6m", "1y" })[lookback] then
+                if ({ ["6h"] = true, ["24h"] = true, ["7d"] = true, ["30d"] = true, ["6m"] = true, ["1y"] = true })[lookback] then
                     fetchPrices("timeseries", { id = loadedSprite.associatedObjectID, lookback = lookback }, successCb, errorCb)
                 else
                     error("Invalid lookback period: " .. tostring(lookback))

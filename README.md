@@ -141,7 +141,7 @@ print("High:", chronotesLatestTrade.high, "Low:", chronotesLatestTrade.low)
 ### **updateDatabase**
 `function gepl.updateDatabase(endpointName : string) -> Bool`
 
-Checks if the cache period has expired and then fetches the prices from the corresponding prices.runescape.wiki endpoint.
+Checks if the cache period has expired and then fetches the prices from the corresponding prices.runescape.wiki endpoint. This is run automatically by each `get` method, but can be used to prime the price data prior to requesting such as when the bank is opened.
 
 #### Params
 `endpointName : 'latest'|'5m'|'1h'` The corresponding endpoint name to fetch.
@@ -170,6 +170,14 @@ Checks if the GE price service is fetching. The service can still be ready while
 
 #### Return
 `IsFetching : boolean` True if the service is fetching, false otherwise.
+
+### **isFetchingOn**
+`function gepl.isFetchingOn() -> Bool`
+
+Checks if the GE price service setting for fetching is enabled. Users have the option to disable fetching to improve performance in some situations and this allows for that state to be read out.
+
+#### Return
+`IsFetchingOn : boolean` True if fetching is enabled, false otherwise.
 
 ## Type Definitions
 Below are the type definitions for the objects returned by the library methods.

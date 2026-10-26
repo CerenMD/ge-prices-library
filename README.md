@@ -40,6 +40,29 @@ local chronotesLatestTrade = gepl.getLatest(49430)
 print("High:", chronotesLatestTrade.high, "Low:", chronotesLatestTrade.low)
 ```
 
+### **getItemData**
+`function gepl.getItemData(itemId : int) -> Item`
+
+Gets the item data from the Gaz Bot dump via Weird Gloop's Chisel API. This includes Grand Exchange data like price, volume and limit, as well as value and alchemy values.
+
+*Weird Gloop Chisel API endpoint: `/gazproj/gazbot/rs_dump.json`*
+
+#### Params
+`itemId : number` The ID of the item to get the price for.
+
+#### Return
+`item : ItemData` The price data for the specified item ID.
+
+#### Important
+An invalid itemId will result in an error being thrown. If you are not sure if the itemId is valid, be prepared for an error via `pcall()` or other methods.
+
+#### Example
+```lua
+-- Retrieves the item data for chronotes and prints the price and volume.
+local chronotesData = gepl.getItemData(49430) --DEPRECATED: use -> gepl.getLatest(49430)
+print("Price:", chronotesData.price, "Volume:", chronotesData.volume)
+```
+
 ### **getFiveMinuteAverage**
 `function gepl.getFiveMinuteAverage(itemId : int) -> Average`
 
@@ -126,7 +149,7 @@ This is an alias for `gepl.getLatest(itemId)`. This will be deprecated in an upc
 `itemId : number` The ID of the item to get the price for.
 
 #### Return
-`item : Item` The price data for the specified item ID.
+`item : Latest` The price data for the specified item ID.
 
 #### Important
 An invalid itemId will result in an error being thrown. If you are not sure if the itemId is valid, be prepared for an error via `pcall()` or other methods.
@@ -141,7 +164,7 @@ print("High:", chronotesLatestTrade.high, "Low:", chronotesLatestTrade.low)
 ### **updateDatabase**
 `function gepl.updateDatabase(endpointName : string) -> Bool`
 
-Checks if the cache period has expired and then fetches the prices from the corresponding prices.runescape.wiki endpoint.
+Checks if the cache period has expired and then fetches the prices from the corresponding prices.runescape.wiki endpoint. This is run automatically by each `get` method, but can be used to prime the price data prior to requesting such as when the bank is opened.
 
 #### Params
 `endpointName : 'latest'|'5m'|'1h'` The corresponding endpoint name to fetch.
@@ -170,6 +193,14 @@ Checks if the GE price service is fetching. The service can still be ready while
 
 #### Return
 `IsFetching : boolean` True if the service is fetching, false otherwise.
+
+### **isFetchingOn**
+`function gepl.isFetchingOn() -> Bool`
+
+Checks if the GE price service setting for fetching is enabled. Users have the option to disable fetching to improve performance in some situations and this allows for that state to be read out.
+
+#### Return
+`IsFetchingOn : boolean` True if fetching is enabled, false otherwise.
 
 ## Type Definitions
 Below are the type definitions for the objects returned by the library methods.
@@ -205,6 +236,16 @@ class TimedAverage
     highPriceVolume : integer   The number of items instantly bought over the time period.
     avgLowPrice : number        The average price of instant sell offers fulfilled over the time period.
     lowPriceVolume : integer    The number of items instantly sold over the time period.
+```
+
+```
+class ItemData
+    price : integer             The curent price of the item in the Grand Exchange.
+    value : integer             The value associated with the item which dictates the low alch, high alch and store price.
+    lowalch : integer           The low alchemy value of the item.
+    highalch : integer          The high alchemy value of the item.
+    volume : integer            The trade volume of the item.
+    limit : integer             The Grand Exchange 4 hour buy limit.
 ```
 
 ## Credits

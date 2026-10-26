@@ -8,6 +8,7 @@
 ---@field fiveMinute Average
 ---@field oneHour Average
 ---@field timeseries { [string]: TimeSeries }
+---@field item ItemData
 
 ---@class Latest
 ---@field high number
@@ -35,14 +36,24 @@
 ---@field timestep integer
 ---@field data table<TimedAverage>
 
+---@class ItemData
+---@field price number
+---@field lowalch number
+---@field value number
+---@field highalch number
+---@field volume number
+---@field limit number
+
 ---@class PriceService
 ---@field getPrice fun(itemId: integer): Item Deprecated as of 0.2.0. Use getLatest(itemId : number) instead.
+---@field getItemData fun(itemId: integer): ItemData
 ---@field getLatest fun(itemId: integer): Latest
 ---@field getFiveMinuteAverage fun(itemId: integer): Average
 ---@field getOneHourAverage fun(itemId: integer): Average
 ---@field getCurrentTimeseries fun(itemId: integer, lookback: string): TimeSeries
----@field isReady fun(): boolean
----@field isFetching fun(): boolean
+---@field isReady fun(endpoint: string): boolean
+---@field isFetching fun(endpoint: string): boolean
+---@field isFetchingOn fun(): boolean
 
 local UI = require("ui")
 local Settings = require("settings")
@@ -50,13 +61,14 @@ local Settings = require("settings")
 local Json = require("util/json_helper")
 local Private = require("util/protected_helper")
 
-local VERSION = "0.2.0"
+local VERSION = "0.3.0"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
-    ["latest"] = 6000,
-    ["fiveMinute"] = 30000,
-    ["oneHour"] = 30000,
-    ["timeseries"] = 30000,
+    ["latest"] = 6000, -- 2 minutes
+    ["fiveMinute"] = 30000, -- 10 minutes
+    ["oneHour"] = 30000, -- 10 minutes
+    ["timeseries"] = 30000, -- 10 minutes
+    ["item"] = 2160000, -- 12 hours
 }
 local PDB_STORAGE_KEY = "GEPL_"
 local PDB_INDEX_KEY = "GEPL_INDEX_"
@@ -67,6 +79,7 @@ local LATEST_ENDPOINT = "/api/v2/rs/latest"
 local FIVE_MINUTES_ENDPOINT = "/api/v2/rs/5m"
 local ONE_HOUR_ENDPOINT = "/api/v2/rs/1h"
 local TIMESERIES_ENDPOINT = "/api/v2/rs/timeseries"
+local PRICES_ENDPOINT = "/gazproj/gazbot/rs_dump.json"
 
 local sessionTimer = 0
 
@@ -85,12 +98,14 @@ function PriceService.new()
         ["5m"] = false,
         ["1h"] = false,
         ["timeseries"] = false,
+        ["item"] = false
     }
     local IsFetching = {
         ["latest"] = false,
         ["5m"] = false,
         ["1h"] = false,
         ["timeseries"] = false,
+        ["item"] = false,
     }
 
     local endpoints = {
@@ -98,11 +113,12 @@ function PriceService.new()
         ["5m"] = "fiveMinute",
         ["1h"] = "oneHour",
         ["timeseries"] = "timeseries",
+        ["item"] = "item"
     }
 
     -- Check the version of the persistent database and clear it if it doesn't match the current version.
     -- This keeps the persistent database in sync with the current version of the PriceService.
-    local lastVersion = "0.2.4"
+    local lastVersion = "0.0.0"
     if PersistentDB:CheckExists(PDB_VERSION_KEY) then
         lastVersion = PersistentDB:GetString(PDB_VERSION_KEY) or "0.0.0"
     end
@@ -124,22 +140,40 @@ function PriceService.new()
         local batch = {}
         local count, first, last = 0, 0, 0
         local batch_num = 0
+         if type(data) ~= "table" then error("Invalid price data: expected a table") end
+
+         for _, cachedItem in pairs(PriceResult.data) do
+             cachedItem[endpointName] = nil
+         end
         for id, item in pairs(data) do
-            batch[#batch + 1] = {id = id, item = item}
-            if not PriceResult.data[tostring(id)] then
-                PriceResult.data[tostring(id)] = {}
-            end
-            PriceResult.data[tostring(id)][endpointName] = item
-            if count == 0 then first = id end
-            last = id
-            count = count + 1
-            if count >= PDB_BATCH_SIZE then
-                -- Save the batch for caching
-                batches[batch_num] = batch
-                indices[batch_num] = {first = first, last = last}
-                batch_num = batch_num + 1
-                batch = {}
-                count = 0
+            if tonumber(id) ~= nil then
+                if endpointName == "item" then
+                    local temp_item = {
+                        price = item.price or nil,
+                        lowalch = item.lowalch or nil,
+                        highalch = item.highalch or nil,
+                        volume = item.volume or nil,
+                        value = item.value or nil,
+                        limit = item.limit or nil
+                    }
+                    item = temp_item
+                end
+                batch[#batch + 1] = {id = id, item = item}
+                if not PriceResult.data[tostring(id)] then
+                    PriceResult.data[tostring(id)] = {}
+                end
+                PriceResult.data[tostring(id)][endpointName] = item
+                if count == 0 then first = id end
+                last = id
+                count = count + 1
+                if count >= PDB_BATCH_SIZE then
+                    -- Save the batch for caching
+                    batches[batch_num] = batch
+                    indices[batch_num] = {first = first, last = last}
+                    batch_num = batch_num + 1
+                    batch = {}
+                    count = 0
+                end
             end
         end
         if count > 0 then
@@ -147,6 +181,9 @@ function PriceService.new()
             batches[batch_num] = batch
             indices[batch_num] = {first = first, last = last}
         end
+        
+        -- Saves the number of batches to the persistent database for tracking purposes.
+        PersistentDB:SetInt(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_BATCH_COUNT", #batches)
 
         -- Save batches of prices to the persistent database, last and first index are saved to find the range of stored batches
         -- This is saved via the ServerLogic event cycle to the persistent database to reduce stutter and performance impact.
@@ -156,7 +193,7 @@ function PriceService.new()
             PersistentDB:SetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num, batches[batch_num])
             PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. batch_num, indices[batch_num])
             batch_num = batch_num + 1
-            if batch_num >= #batches then
+            if batches[batch_num] == nil then
                 Event.ServerLogic.Unsubscribe("SAVE_" .. string.upper(endpointName))
                 -- Update the last save time in the persistent database
                 PersistentDB:SetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName), update_time)
@@ -172,15 +209,13 @@ function PriceService.new()
     --- @return integer lastUpdateTime the last time the prices were updated in the persistent database.
     local loadPrices = function(endpointName)
         local indices = {}
-        local batch_num = 0
+        local batch_count = PersistentDB:GetInt(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_BATCH_COUNT") or 0
         local lastUpdateTime = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
-        
-        -- Event.ServerLogic.Subscribe("LOAD_" .. string.upper(endpointName), function() -- For slow loading, seems unnecessary but will leave as reference if needed.
-        while true do
+
+        for batch_num = 0, batch_count - 1 do
             local batch = PersistentDB:GetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num)
             local index = PersistentDB:GetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. "_" .. batch_num)
             if not batch then break end
-            -- if not batch then Event.ServerLogic.Unsubscribe("LOAD_" .. string.upper(endpointName)) return end
             for _, entry in ipairs(batch) do
                 local id = entry.id
                 if not PriceResult.data[tostring(id)] then
@@ -189,7 +224,6 @@ function PriceService.new()
                 PriceResult.data[tostring(id)][endpointName] = entry.item
             end
             indices[batch_num] = index
-            batch_num = batch_num + 1
         end
 
         return indices, lastUpdateTime
@@ -200,11 +234,16 @@ function PriceService.new()
     local requestHandler = function(req)
         local segments = {}
         for segment in string.gmatch(req.url, "[^/]+") do table.insert(segments, segment) end
-        local tableName = endpoints[segments[#segments]]
+        local tableName = endpoints[segments[#segments]] or "item"
 
         IsFetching[tableName] = false
         if req.successful then
-            local data = Json.safe_decode(req.data)["data"]
+            local success, decoded = pcall(Json.decode, req.data)
+            if not success or type(decoded) ~= "table" or (tableName ~= "item" and type(decoded.data) ~= "table") then
+                log(req.url, "invalid price response", not success and decoded or "missing data table")
+                return
+            end
+            local data = tableName == "item" and decoded or decoded.data
             PriceResult.indices[tableName], PriceResult.lastUpdateTime[tableName] = insertPrices(tableName, data)
             IsReady[tableName] = true
         elseif req.timedOut then
@@ -251,7 +290,14 @@ function PriceService.new()
                 local callbackWrapper = function(req)
                     IsFetching[endpointName] = false
                     if req.successful then
-                        local data = Json.safe_decode(req.data)["data"]
+                        local success, decoded = pcall(Json.decode, req.data)
+                        if not success or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
+                            local message = "Invalid timeseries response: " .. (not success and decoded or "missing data table")
+                            log(req.url, message)
+                            if errorCb then errorCb(message) end
+                            return
+                        end
+                        local data = decoded.data
                         if not PriceResult.data[endpointName] then PriceResult.data[endpointName] = {} end
                         if not PriceResult.data[endpointName][args["id"]] then PriceResult.data[endpointName][args["id"]] = {} end
 
@@ -278,16 +324,30 @@ function PriceService.new()
         end
     end
 
+    --- Gets the item data. First checking the cache and then fetching from chisel.weirdgloop.org if necessary. The data is loaded into PriceResult and the readiness state is updated.
+    local fetchChisel = function()
+        if Plugin.HasPermission(PluginPermissions.httpAccess) then
+            IsFetching["item"] = true
+            local req = HTTPRequest.new(Plugin.urls.chisel, PRICES_ENDPOINT)
+            req:AddHeader("User-Agent", "ge-prices-library/1.0")
+            req:Get(requestHandler)
+        else
+            log("Missing required permission: httpAccess")
+        end
+    end
+
     --- Gets the GE prices. First checking the cache in the PersistentDB and then fetching from prices.runescape.wiki. The data is loaded into PriceResult and the readiness state is updated.
     local getPrices = function()
         for _, endpointName in pairs(endpoints) do
             local curTimer = sessionTimer
             local lastSave = PersistentDB:GetInt(PDB_LAST_SAVE_KEY .. string.upper(endpointName))
-            if lastSave and CACHE_PERIOD[endpointName] and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then
+            if lastSave and CACHE_PERIOD[endpointName] and (not Settings.config.enablePriceFetching or math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName]) then
                 -- Extract data from PersistentDB
                 PriceResult.indices[endpointName], PriceResult.lastUpdateTime[endpointName] = loadPrices(endpointName)
                 IsReady[endpointName] = true
-            elseif endpointName ~= "timeseries" then
+            elseif endpointName == "item" and Settings.config.enablePriceFetching then
+                fetchChisel()
+            elseif endpointName ~= "timeseries" and endpointName ~= "item" and Settings.config.enablePriceFetching then
                 fetchPrices(endpointName)
             end
         end
@@ -296,15 +356,21 @@ function PriceService.new()
     --- Checks if the cache period has expired and then fetches the prices from prices.runescape.wiki.
     ---@return boolean cacheExpired Returns true if the cache expired, the prices will then be fetched.
     local updateDatabase = function(endpointName)
-        if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
-        
+        -- Returns instantly if the endpoint name is invalid or price fetching is disabled.
+        if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["item"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+        if not Settings.config.enablePriceFetching then return false end
+
         local curTimer = sessionTimer
         local lastSave = PriceResult.lastUpdateTime[endpointName]
-        if not Settings.config.enablePriceFetching and lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then return false end
+        if lastSave and math.abs(curTimer - lastSave) <= CACHE_PERIOD[endpointName] then return false end
         -- Set lastUpdateTime now to prevent further iterations from initiating multiple fetches while the fetch is running.
         -- Check IsFetching as a safety percaution.
         PriceResult.lastUpdateTime[endpointName] = sessionTimer
-        if not IsFetching[endpointName] then fetchPrices(endpointName) end
+        if endpointName ~= "item" and not IsFetching[endpointName] then
+            fetchPrices(endpointName)
+        elseif endpointName == "item" and not IsFetching[endpointName] then
+            fetchChisel()
+        end
         return true
     end
 
@@ -324,6 +390,11 @@ function PriceService.new()
         --- Subscribes to ServerLogic to track the session time for caching purposes.
         Event.ServerLogic.Subscribe("TickClock", function()        
             sessionTimer = sessionTimer + 30
+        end)
+
+        -- Prepares to fetch prices when HTTP access is granted. This prevents a stuck state where prices cannot be fetched due to lack of permissions even after permission is granted.
+        Event.OptionalPermissionChanged.Subscribe("UpdatedPermissions", function(event)
+            if event.name == "httpAccess" and event.granted then getPrices() end
         end)
 
         -- Initialize the GE prices by either loading from the cache or fetching from the server.
@@ -346,6 +417,19 @@ function PriceService.new()
                 return Private.ReadOnly(PriceResult.data[tostring(itemId)].latest)
             else
                 error("Price not found for itemId: " .. tostring(itemId))
+            end
+        end,
+
+        --- Gets the item data for a specific item ID from rs_dump.json generated through chisel.weirdgloop.org
+        --- @param itemId any The ID of the item to get the data for.
+        --- @return ItemData item The item data for the specified item ID.
+        --- @throw Invalid itemId resulting in the item not being able to be found.
+        getItemData = function(itemId)
+            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] and PriceResult.data[tostring(itemId)].item then
+                if not IsFetching["item"] then updateDatabase("item") end
+                return Private.ReadOnly(PriceResult.data[tostring(itemId)].item)
+            else
+                error("Item data not found for itemId: " .. tostring(itemId))
             end
         end,
         
@@ -401,7 +485,7 @@ function PriceService.new()
             if not Settings.config.enablePriceFetching then error("Price fetching is disabled by the player.") end
             if not loadedSprite.visibleGlobal or loadedSprite.associatedObjectID == -1 then error("Grand Exchange Buy/Sell window is not loaded.") end
             if not IsFetching["timeseries"] then
-                if ({ "6h", "24h", "7d", "30d", "6m", "1y" })[lookback] then
+                if ({ ["6h"] = true, ["24h"] = true, ["7d"] = true, ["30d"] = true, ["6m"] = true, ["1y"] = true })[lookback] then
                     fetchPrices("timeseries", { id = loadedSprite.associatedObjectID, lookback = lookback }, successCb, errorCb)
                 else
                     error("Invalid lookback period: " .. tostring(lookback))
@@ -414,20 +498,20 @@ function PriceService.new()
         end,
 
         --- Checks if the GE price service is ready per endpoint. Defaults to "latest" if not supplied.
-        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" The endpoint name to check readiness for. Defaults to "latest" if not supplied.
+        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" | "item" The endpoint name to check readiness for. Defaults to "latest" if not supplied.
         --- @return boolean IsReady true if the service is ready, false otherwise.
         isReady = function(endpointName)
             if not endpointName then return IsReady["latest"] end
-            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true, ["item"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsReady[endpointName]
         end,
 
         --- Checks if the GE price service is fetching for a specific table. The service can still be ready while fetching with previous data.
-        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" The endpoint name to check fetching status for.
+        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" | "item" The endpoint name to check fetching status for.
         --- @return boolean IsFetching true if the service is fetching, false otherwise.
         isFetching = function(endpointName)
             if not endpointName then return IsFetching["latest"] end
-            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true, ["item"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsFetching[endpointName]
         end,
 
@@ -439,10 +523,13 @@ function PriceService.new()
     }
 end
 
---- Saves the plugin settings and stops the SettingsContentLayer.
+--- Saves the plugin settings, stops the SettingsContentLayer and cleans up persistent event subscriptions.
 function PriceService.Shutdown()
     Settings.SaveSettings()
     UI.Shutdown()
+
+    Event.ServerLogic.Unsubscribe("TickClock")
+    Event.OptionalPermissionChanged.Unsubscribe("UpdatedPermissions")
 end
 
 return PriceService

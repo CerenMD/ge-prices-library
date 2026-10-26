@@ -366,7 +366,11 @@ function PriceService.new()
         -- Set lastUpdateTime now to prevent further iterations from initiating multiple fetches while the fetch is running.
         -- Check IsFetching as a safety percaution.
         PriceResult.lastUpdateTime[endpointName] = sessionTimer
-        if not IsFetching[endpointName] then fetchPrices(endpointName) end
+        if endpointName ~= "item" and not IsFetching[endpointName] then
+            fetchPrices(endpointName)
+        elseif endpointName == "item" and not IsFetching[endpointName] then
+            fetchChisel()
+        end
         return true
     end
 

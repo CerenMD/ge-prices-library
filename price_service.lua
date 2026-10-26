@@ -238,9 +238,9 @@ function PriceService.new()
 
         IsFetching[tableName] = false
         if req.successful then
-            local decoded, err = Json.decode(req.data)
-            if err or type(decoded) ~= "table" or (tableName ~= "item" and type(decoded.data) ~= "table") then
-                log(req.url, "invalid price response", err or "missing data table")
+            local success, decoded = pcall(Json.decode, req.data)
+            if not success or type(decoded) ~= "table" or (tableName ~= "item" and type(decoded.data) ~= "table") then
+                log(req.url, "invalid price response", not success and decoded or "missing data table")
                 return
             end
             local data = tableName == "item" and decoded or decoded.data
@@ -290,9 +290,9 @@ function PriceService.new()
                 local callbackWrapper = function(req)
                     IsFetching[endpointName] = false
                     if req.successful then
-                        local decoded, err = Json.decode(req.data)
-                        if err or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
-                            local message = "Invalid timeseries response: " .. (err or "missing data table")
+                        local success, decoded = pcall(Json.decode, req.data)
+                        if not success or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
+                            local message = "Invalid timeseries response: " .. (not success and decoded or "missing data table")
                             log(req.url, message)
                             if errorCb then errorCb(message) end
                             return

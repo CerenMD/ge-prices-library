@@ -498,20 +498,20 @@ function PriceService.new()
         end,
 
         --- Checks if the GE price service is ready per endpoint. Defaults to "latest" if not supplied.
-        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" The endpoint name to check readiness for. Defaults to "latest" if not supplied.
+        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" | "item" The endpoint name to check readiness for. Defaults to "latest" if not supplied.
         --- @return boolean IsReady true if the service is ready, false otherwise.
         isReady = function(endpointName)
             if not endpointName then return IsReady["latest"] end
-            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true, ["prices"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true, ["item"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsReady[endpointName]
         end,
 
         --- Checks if the GE price service is fetching for a specific table. The service can still be ready while fetching with previous data.
-        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" The endpoint name to check fetching status for.
+        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" | "item" The endpoint name to check fetching status for.
         --- @return boolean IsFetching true if the service is fetching, false otherwise.
         isFetching = function(endpointName)
             if not endpointName then return IsFetching["latest"] end
-            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true, ["prices"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true, ["item"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsFetching[endpointName]
         end,
 

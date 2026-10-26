@@ -425,11 +425,11 @@ function PriceService.new()
         --- @return ItemData item The item data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getItemData = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
+            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] and PriceResult.data[tostring(itemId)].item then
                 if not IsFetching["item"] then updateDatabase("item") end
                 return Private.ReadOnly(PriceResult.data[tostring(itemId)].item)
             else
-                error("Price not found for itemId: " .. tostring(itemId))
+                error("Item data not found for itemId: " .. tostring(itemId))
             end
         end,
         

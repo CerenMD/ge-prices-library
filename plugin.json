@@ -1,10 +1,10 @@
 {
   "name": "GE Price Library",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "contactEmailAddress": "plugins@ceren.tech",
   "requiredDependencies": {},
   "optionalDependencies": {},
   "hasSettingsIcon" : true,
   "requiredPermissions": [ "httpAccess" ],
-  "urls": { "prices" : "https://prices.runescape.wiki" }
+  "urls": { "prices" : "https://prices.runescape.wiki", "chisel" : "https://chisel.weirdgloop.org" }
 }

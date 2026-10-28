@@ -40,29 +40,6 @@ local chronotesLatestTrade = gepl.getLatest(49430)
 print("High:", chronotesLatestTrade.high, "Low:", chronotesLatestTrade.low)
 ```
 
-### **getItemData**
-`function gepl.getItemData(itemId : int) -> Item`
-
-Gets the item data from the Gaz Bot dump via Weird Gloop's Chisel API. This includes Grand Exchange data like price, volume and limit, as well as value and alchemy values.
-
-*Weird Gloop Chisel API endpoint: `/gazproj/gazbot/rs_dump.json`*
-
-#### Params
-`itemId : number` The ID of the item to get the price for.
-
-#### Return
-`item : ItemData` The price data for the specified item ID.
-
-#### Important
-An invalid itemId will result in an error being thrown. If you are not sure if the itemId is valid, be prepared for an error via `pcall()` or other methods.
-
-#### Example
-```lua
--- Retrieves the item data for chronotes and prints the price and volume.
-local chronotesData = gepl.getItemData(49430) --DEPRECATED: use -> gepl.getLatest(49430)
-print("Price:", chronotesData.price, "Volume:", chronotesData.volume)
-```
-
 ### **getFiveMinuteAverage**
 `function gepl.getFiveMinuteAverage(itemId : int) -> Average`
 
@@ -238,17 +215,7 @@ class TimedAverage
     lowPriceVolume : integer    The number of items instantly sold over the time period.
 ```
 
-```
-class ItemData
-    price : integer             The curent price of the item in the Grand Exchange.
-    value : integer             The value associated with the item which dictates the low alch, high alch and store price.
-    lowalch : integer           The low alchemy value of the item.
-    highalch : integer          The high alchemy value of the item.
-    volume : integer            The trade volume of the item.
-    limit : integer             The Grand Exchange 4 hour buy limit.
-```
-
 ## Credits
-Plugin by Ceren with help from TheJoshJ, CookMePlox and Sudo Bash.
+Plugin by Ceren with help from TheJoshJ, CookMePlox, Jayden and Sudo Bash.
 
 The structure was inspired by the [RuneLite WikiPriceService](https://github.com/runelite/api.runelite.net/blob/e9c4abce52bc4a7ed8847750a10855324c29362d/http-service/src/main/java/net/runelite/http/service/wiki/WikiPriceService.java) although adapted for the limited environment we have and expanded to align with the Runescape Wiki Prices API endpoints.

@@ -45,7 +45,7 @@ local Settings = require("settings")
 local Json = require("util/json_helper")
 local Private = require("util/protected_helper")
 
-local VERSION = "0.3.0"
+local VERSION = "0.3.1"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
     ["latest"] = 3000, -- 1 minutes
@@ -148,10 +148,11 @@ function PriceService.new()
             -- Save the remaining batch to the database
             batches[batch_num] = batch
             indices[batch_num] = {first = first, last = last}
+            batch_num = batch_num + 1
         end
         
         -- Saves the number of batches to the persistent database for tracking purposes.
-        PersistentDB:SetInt(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_BATCH_COUNT", #batches)
+        PersistentDB:SetInt(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_BATCH_COUNT", batch_num)
 
         -- Save batches of prices to the persistent database, last and first index are saved to find the range of stored batches
         -- This is saved via the ServerLogic event cycle to the persistent database to reduce stutter and performance impact.
@@ -159,7 +160,7 @@ function PriceService.new()
         local update_time = sessionTimer
         Event.ServerLogic.Subscribe("SAVE_" .. string.upper(endpointName), function()
             PersistentDB:SetStructuredData(PDB_STORAGE_KEY .. string.upper(endpointName) .. "_" .. batch_num, batches[batch_num])
-            PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. batch_num, indices[batch_num])
+            PersistentDB:SetStructuredData(PDB_INDEX_KEY .. string.upper(endpointName) .. "_" .. batch_num, indices[batch_num])
             batch_num = batch_num + 1
             if batches[batch_num] == nil then
                 Event.ServerLogic.Unsubscribe("SAVE_" .. string.upper(endpointName))

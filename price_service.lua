@@ -49,8 +49,8 @@ local VERSION = "0.3.0"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
     ["latest"] = 3000, -- 1 minutes
-    ["fiveMinute"] = 15000, -- 5 minutes
-    ["oneHour"] = 15000, -- 5 minutes
+    ["5m"] = 15000, -- 5 minutes
+    ["1h"] = 15000, -- 5 minutes
     ["timeseries"] = 15000, -- 5 minutes
 }
 local PDB_STORAGE_KEY = "GEPL_"
@@ -90,8 +90,8 @@ function PriceService.new()
 
     local endpoints = {
         ["latest"] = "latest",
-        ["5m"] = "fiveMinute",
-        ["1h"] = "oneHour",
+        ["5m"] = "5m",
+        ["1h"] = "1h",
         ["timeseries"] = "timeseries"
     }
 
@@ -246,8 +246,8 @@ function PriceService.new()
     local fetchPrices = function(endpointName, args, successCb, errorCb)
         local lookup = {
             ["latest"] = LATEST_ENDPOINT,
-            ["fiveMinute"] = FIVE_MINUTES_ENDPOINT,
-            ["oneHour"] = ONE_HOUR_ENDPOINT,
+            ["5m"] = FIVE_MINUTES_ENDPOINT,
+            ["1h"] = ONE_HOUR_ENDPOINT,
             ["timeseries"] = TIMESERIES_ENDPOINT
         }
         if Plugin.HasPermission(PluginPermissions.httpAccess) then
@@ -390,9 +390,9 @@ function PriceService.new()
         --- @return Item item The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getFiveMinuteAverage = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
-                if not IsFetching["5m"] then updateDatabase("fiveMinute") end
-                return Private.ReadOnly(PriceResult.data[tostring(itemId)].fiveMinute)
+            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] and PriceResult.data[tostring(itemId)]["5m"] then
+                if not IsFetching["5m"] then updateDatabase("5m") end
+                return Private.ReadOnly(PriceResult.data[tostring(itemId)]["5m"])
             else
                 error("Price not found for itemId: " .. tostring(itemId))
             end
@@ -403,9 +403,9 @@ function PriceService.new()
         --- @return Item item The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getOneHourAverage = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
-                if not IsFetching["1h"] then updateDatabase("oneHour") end
-                return Private.ReadOnly(PriceResult.data[tostring(itemId)].oneHour)
+            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] and PriceResult.data[tostring(itemId)]["1h"] then
+                if not IsFetching["1h"] then updateDatabase("1h") end
+                return Private.ReadOnly(PriceResult.data[tostring(itemId)]["1h"])
             else
                 error("Price not found for itemId: " .. tostring(itemId))
             end

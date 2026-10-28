@@ -208,7 +208,7 @@ function PriceService.new()
         IsFetching[tableName] = false
         if req.successful then
             local success, decoded = pcall(Json.decode, req.data)
-            if not success or type(decoded) ~= "table" then
+            if not success or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
                 log(req.url, "invalid price response", not success and decoded or "missing data table")
                 return
             end
@@ -388,10 +388,10 @@ function PriceService.new()
         
         --- Gets the five minute average for a specific item ID from the loaded GE prices.
         --- @param itemId number The ID of the item to get the price for.
-        --- @return Item item The price data for the specified item ID.
+        --- @return Average item The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getFiveMinuteAverage = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] and PriceResult.data[tostring(itemId)]["5m"] then
+            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
                 if not IsFetching["5m"] then updateDatabase("5m") end
                 return Private.ReadOnly(PriceResult.data[tostring(itemId)]["5m"])
             else
@@ -401,10 +401,10 @@ function PriceService.new()
         
         --- Gets the hourly average for a specific item ID from the loaded GE prices.
         --- @param itemId number The ID of the item to get the price for.
-        --- @return Item item The price data for the specified item ID.
+        --- @return Average item The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getOneHourAverage = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] and PriceResult.data[tostring(itemId)]["1h"] then
+            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
                 if not IsFetching["1h"] then updateDatabase("1h") end
                 return Private.ReadOnly(PriceResult.data[tostring(itemId)]["1h"])
             else

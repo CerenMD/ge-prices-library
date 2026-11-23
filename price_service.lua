@@ -9,12 +9,6 @@
 ---@field low number
 ---@field lowTime integer
 
----@class Average
----@field avgHighPrice number
----@field highPriceVolume integer
----@field avgLowPrice number
----@field lowPriceVolume integer
-
 ---@class TimedAverage
 ---@field timestamp integer
 ---@field avgHighPrice number
@@ -32,8 +26,11 @@
 ---@class PriceService
 ---@field getPrice fun(itemId: integer): Latest Deprecated as of 0.2.0. Use getLatest(itemId : number) instead.
 ---@field getLatest fun(itemId: integer): Latest
----@field getFiveMinuteAverage fun(itemId: integer): Average
----@field getOneHourAverage fun(itemId: integer): Average
+---@field getFiveMinuteAverage fun(itemId: integer): TimedAverage
+---@field getOneHourAverage fun(itemId: integer): TimedAverage
+---@field getThreeHourAverage fun(itemId: integer): TimedAverage
+---@field getSixHourAverage fun(itemId: integer): TimedAverage
+---@field getOneDayAverage fun(itemId: integer): TimedAverage
 ---@field getCurrentTimeseries fun(itemId: integer, lookback: string): TimeSeries
 ---@field isReady fun(endpoint: string): boolean
 ---@field isFetching fun(endpoint: string): boolean
@@ -45,12 +42,15 @@ local Settings = require("settings")
 local Json = require("util/json_helper")
 local Private = require("util/protected_helper")
 
-local VERSION = "0.3.1"
+local VERSION = "0.4.0"
 local PDB_BATCH_SIZE = 200 -- number of items per database entry
 local CACHE_PERIOD = {
     ["latest"] = 3000, -- 1 minutes
     ["5m"] = 15000, -- 5 minutes
     ["1h"] = 15000, -- 5 minutes
+    ["3h"] = 15000, -- 5 minutes
+    ["6h"] = 15000, -- 5 minutes
+    ["24h"] = 15000, -- 5 minutes
     ["timeseries"] = 15000, -- 5 minutes
 }
 local PDB_STORAGE_KEY = "GEPL_"
@@ -61,6 +61,9 @@ local PDB_VERSION_KEY = "GEPL_VERSION"
 local LATEST_ENDPOINT = "/api/v2/rs/latest"
 local FIVE_MINUTES_ENDPOINT = "/api/v2/rs/5m"
 local ONE_HOUR_ENDPOINT = "/api/v2/rs/1h"
+local THREE_HOUR_ENDPOINT = "/api/v2/rs/3h"
+local SIX_HOUR_ENDPOINT = "/api/v2/rs/6h"
+local ONE_DAY_ENDPOINT = "/api/v2/rs/24h"
 local TIMESERIES_ENDPOINT = "/api/v2/rs/timeseries"
 
 local sessionTimer = 0
@@ -79,12 +82,18 @@ function PriceService.new()
         ["latest"] = false,
         ["5m"] = false,
         ["1h"] = false,
+        ["3h"] = false,
+        ["6h"] = false,
+        ["24h"] = false,
         ["timeseries"] = false
     }
     local IsFetching = {
         ["latest"] = false,
         ["5m"] = false,
         ["1h"] = false,
+        ["3h"] = false,
+        ["6h"] = false,
+        ["24h"] = false,
         ["timeseries"] = false
     }
 
@@ -92,6 +101,9 @@ function PriceService.new()
         ["latest"] = "latest",
         ["5m"] = "5m",
         ["1h"] = "1h",
+        ["3h"] = "3h",
+        ["6h"] = "6h",
+        ["24h"] = "24h",
         ["timeseries"] = "timeseries"
     }
 
@@ -108,10 +120,10 @@ function PriceService.new()
 
     --- Inserts the given price data into the persistent database and returns the structured data and indices.
     --- @param endpointName string the name of the endpoint to insert prices for.
-    --- @param data string The raw price data in JSON format.
+    --- @param decoded table The price data in JSON format.
     --- @return table<integer, {first: integer, last: integer}> indices The indices for tracking batches.
     --- @return integer lastUpdateTime the last time the prices were fetched from prices.runescape.wiki.
-    local insertPrices = function(endpointName, data)
+    local insertPrices = function(endpointName, decoded)
         local batches = {}
         local indices = {}
         
@@ -119,18 +131,21 @@ function PriceService.new()
         local batch = {}
         local count, first, last = 0, 0, 0
         local batch_num = 0
-         if type(data) ~= "table" then error("Invalid price data: expected a table") end
+         if type(decoded) ~= "table" then error("Invalid price data: expected a table") end
 
          for _, cachedItem in pairs(PriceResult.data) do
              cachedItem[endpointName] = nil
          end
-        for id, item in pairs(data) do
+        for id, item in pairs(decoded.data) do
             if tonumber(id) ~= nil then
                 batch[#batch + 1] = {id = id, item = item}
                 if not PriceResult.data[tostring(id)] then
                     PriceResult.data[tostring(id)] = {}
                 end
                 PriceResult.data[tostring(id)][endpointName] = item
+                if decoded.timestamp then
+                    PriceResult.data[tostring(id)][endpointName].timestamp = decoded.timestamp
+                end
                 if count == 0 then first = id end
                 last = id
                 count = count + 1
@@ -212,8 +227,7 @@ function PriceService.new()
                 log(req.url, "invalid price response", not success and decoded or "missing data table")
                 return
             end
-            local data = decoded.data
-            PriceResult.indices[tableName], PriceResult.lastUpdateTime[tableName] = insertPrices(tableName, data)
+            PriceResult.indices[tableName], PriceResult.lastUpdateTime[tableName] = insertPrices(tableName, decoded)
             IsReady[tableName] = true
         elseif req.timedOut then
             log(req.url, "request timed out")
@@ -249,6 +263,9 @@ function PriceService.new()
             ["latest"] = LATEST_ENDPOINT,
             ["5m"] = FIVE_MINUTES_ENDPOINT,
             ["1h"] = ONE_HOUR_ENDPOINT,
+            ["3h"] = THREE_HOUR_ENDPOINT,
+            ["6h"] = SIX_HOUR_ENDPOINT,
+            ["24h"] = ONE_DAY_ENDPOINT,
             ["timeseries"] = TIMESERIES_ENDPOINT
         }
         if Plugin.HasPermission(PluginPermissions.httpAccess) then
@@ -270,11 +287,16 @@ function PriceService.new()
                         if not PriceResult.data[endpointName] then PriceResult.data[endpointName] = {} end
                         if not PriceResult.data[endpointName][args["id"]] then PriceResult.data[endpointName][args["id"]] = {} end
 
-                        PriceResult.data[endpointName][args["id"]][args["lookback"]] = {
+                        local timeseriesResult = {
                             data = data,
+                            startTimestamp = decoded.startTimestamp,
+                            endTimestamp = decoded.endTimestamp,
+                            timestep = decoded.timestep,
                             savedTime = sessionTimer
                         }
-                        successCb(data)
+                        successCb(timeseriesResult)
+
+                        PriceResult.data[endpointName][args["id"]][args["lookback"]] = timeseriesResult
                         IsReady[endpointName] = true
                     elseif req.timedOut then
                         log(req.url, "request timed out")
@@ -312,7 +334,7 @@ function PriceService.new()
     ---@return boolean cacheExpired Returns true if the cache expired, the prices will then be fetched.
     local updateDatabase = function(endpointName)
         -- Returns instantly if the endpoint name is invalid or price fetching is disabled.
-        if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+        if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["3h"] = true, ["6h"] = true, ["24h"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
         if not Settings.config.enablePriceFetching then return false end
 
         local curTimer = sessionTimer
@@ -325,6 +347,19 @@ function PriceService.new()
             fetchPrices(endpointName)
         end
         return true
+    end
+
+    --- Gets the trade data for a specific item ID from the loaded GE prices based on the specified endpoint code.
+    --- @param itemId number The ID of the item to get the price for.
+    --- @return Latest | TimedAverage data The price data for the specified item ID.
+    --- @throw Invalid itemId resulting in the item not being able to be found.
+    local getPriceEndpoint = function(itemId, endpointCode)
+        if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
+            if not IsFetching[endpointCode] then updateDatabase(endpointCode) end
+            return Private.ReadOnly(PriceResult.data[tostring(itemId)][endpointCode])
+        else
+            error("Price not found for itemId: " .. tostring(itemId))
+        end
     end
 
     --- Loads the plugin settings from the persistent database.
@@ -362,54 +397,59 @@ function PriceService.new()
         --- DEPRECATED: Use getLatest(itemId : number) instead. Will be phased out in future versions.
         --- Gets the latest trade for a specific item ID from the loaded GE prices. Subject to a five minute cache.
         --- @param itemId number The ID of the item to get the price for.
-        --- @return Item item The price data for the specified item ID.
+        --- @return Latest data The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getPrice = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
-                if not IsFetching["latest"] then updateDatabase("latest") end
-                return Private.ReadOnly(PriceResult.data[tostring(itemId)].latest)
-            else
-                error("Price not found for itemId: " .. tostring(itemId))
-            end
+            log("getPrice has been deprecated and will be phased out in version 1.0.0. Use getLatest instead.")
+            return getPriceEndpoint(itemId, "latest") ---@type Latest
         end,
         
         --- Gets the latest trade for a specific item ID from the loaded GE prices. Subject to a five minute cache.
         --- @param itemId number The ID of the item to get the price for.
-        --- @return Item item The price data for the specified item ID.
+        --- @return Latest data The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getLatest = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
-                if not IsFetching["latest"] then updateDatabase("latest") end
-                return Private.ReadOnly(PriceResult.data[tostring(itemId)].latest)
-            else
-                error("Price not found for itemId: " .. tostring(itemId))
-            end
+            return getPriceEndpoint(itemId, "latest") ---@type Latest
         end,
         
         --- Gets the five minute average for a specific item ID from the loaded GE prices.
         --- @param itemId number The ID of the item to get the price for.
-        --- @return Average item The price data for the specified item ID.
+        --- @return TimedAverage data The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getFiveMinuteAverage = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
-                if not IsFetching["5m"] then updateDatabase("5m") end
-                return Private.ReadOnly(PriceResult.data[tostring(itemId)]["5m"])
-            else
-                error("Price not found for itemId: " .. tostring(itemId))
-            end
+            return getPriceEndpoint(itemId, "5m") ---@type TimedAverage
         end,
         
         --- Gets the hourly average for a specific item ID from the loaded GE prices.
         --- @param itemId number The ID of the item to get the price for.
-        --- @return Average item The price data for the specified item ID.
+        --- @return TimedAverage data The price data for the specified item ID.
         --- @throw Invalid itemId resulting in the item not being able to be found.
         getOneHourAverage = function(itemId)
-            if PriceResult and PriceResult.data and PriceResult.data[tostring(itemId)] then
-                if not IsFetching["1h"] then updateDatabase("1h") end
-                return Private.ReadOnly(PriceResult.data[tostring(itemId)]["1h"])
-            else
-                error("Price not found for itemId: " .. tostring(itemId))
-            end
+            return getPriceEndpoint(itemId, "1h") ---@type TimedAverage
+        end,
+        
+        --- Gets the three-hour average for a specific item ID from the loaded GE prices.
+        --- @param itemId number The ID of the item to get the price for.
+        --- @return TimedAverage data The price data for the specified item ID.
+        --- @throw Invalid itemId resulting in the item not being able to be found.
+        getThreeHourAverage = function(itemId)
+            return getPriceEndpoint(itemId, "3h") ---@type TimedAverage
+        end,
+        
+        --- Gets the six-hour average for a specific item ID from the loaded GE prices.
+        --- @param itemId number The ID of the item to get the price for.
+        --- @return TimedAverage data The price data for the specified item ID.
+        --- @throw Invalid itemId resulting in the item not being able to be found.
+        getSixHourAverage = function(itemId)
+            return getPriceEndpoint(itemId, "6h") ---@type TimedAverage
+        end,
+        
+        --- Gets the daily average for a specific item ID from the loaded GE prices.
+        --- @param itemId number The ID of the item to get the price for.
+        --- @return TimedAverage data The price data for the specified item ID.
+        --- @throw Invalid itemId resulting in the item not being able to be found.
+        getOneDayAverage = function(itemId)
+            return getPriceEndpoint(itemId, "24h") ---@type TimedAverage
         end,
 
         --- Asynchronously gets the current timeseries for the specified lookback period for the currently loaded GE item.
@@ -437,21 +477,46 @@ function PriceService.new()
             return true
         end,
 
+        --- Asynchronously gets the current timeseries for the specified lookback period for the currently loaded GE item.
+        --- A lookback period specifies the duration for which the timeseries data should be fetched.
+        --- A callback function is required to handle the fetched timeseries data as this is an asynchronous operation.
+        --- @param itemId number The ID of the item for which to fetch the timeseries.
+        --- @param lookback any The lookback period for the timeseries. { '6h' | '24h' | '7d' | '30d' | '6m' | '1y' }
+        --- @param successCb function The function to call once the timeseries data is fetched. Should take the fetched timeseries data as an argument.
+        --- @param errorCb function The function to call if an error occurs during the timeseries data fetch. Should take the error message as an argument.
+        --- @return boolean success True if the timeseries data fetch was initiated successfully, false otherwise.
+        --- @throw Error if price fetching is disabled by the player or if the Grand Exchange window is not loaded.
+        getTimeseries = function(itemId, lookback, successCb, errorCb)
+            if not itemId then error("Item ID is required.") end
+            if not Settings.config.enablePriceFetching then error("Price fetching is disabled by the player.") end
+            if not IsFetching["timeseries"] then
+                if ({ ["6h"] = true, ["24h"] = true, ["7d"] = true, ["30d"] = true, ["6m"] = true, ["1y"] = true })[lookback] then
+                    fetchPrices("timeseries", { id = itemId, lookback = lookback }, successCb, errorCb)
+                else
+                    error("Invalid lookback period: " .. tostring(lookback))
+                end
+            else
+                error("Timeseries data fetch is already in progress.")
+            end
+
+            return true
+        end,
+
         --- Checks if the GE price service is ready per endpoint. Defaults to "latest" if not supplied.
-        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" The endpoint name to check readiness for. Defaults to "latest" if not supplied.
+        --- @param endpointName "latest" | "5m" | "1h" | "3h" | "6h" | "24h" | "timeseries" The endpoint name to check readiness for. Defaults to "latest" if not supplied.
         --- @return boolean IsReady true if the service is ready, false otherwise.
         isReady = function(endpointName)
             if not endpointName then return IsReady["latest"] end
-            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["3h"] = true, ["6h"] = true, ["24h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsReady[endpointName]
         end,
 
         --- Checks if the GE price service is fetching for a specific table. The service can still be ready while fetching with previous data.
-        --- @param endpointName "latest" | "5m" | "1h" | "timeseries" The endpoint name to check fetching status for.
+        --- @param endpointName "latest" | "5m" | "1h" | "3h" | "6h" | "24h" | "timeseries" The endpoint name to check fetching status for.
         --- @return boolean IsFetching true if the service is fetching, false otherwise.
         isFetching = function(endpointName)
             if not endpointName then return IsFetching["latest"] end
-            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
+            if not ({ ["latest"] = true, ["5m"] = true, ["1h"] = true, ["3h"] = true, ["6h"] = true, ["24h"] = true, ["timeseries"] = true })[endpointName] then error("Invalid endpoint name: " .. tostring(endpointName)) end
             return IsFetching[endpointName]
         end,
 
